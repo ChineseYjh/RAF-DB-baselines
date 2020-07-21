@@ -61,7 +61,7 @@ def train(config,logger):
     
     #define optimizer
     optimizer_class=getattr(torch.optim,config.optim)
-    optimizer=optimizer_class(net.parameters(),lr=config.lr)
+    optimizer=optimizer_class(net.parameters(),lr=config.lr,weight_decay=config.weight_decay)
     
     #load checkpoint if needed
     start_n_iter=0
@@ -149,9 +149,11 @@ def train(config,logger):
                             y_data=y_data.to(device)
                         prepare_time=time.time()-start_time
                         #forward and predict
-                        pred_data=net(x_data).detach()
+                        pred_data=net(x_data)
                         loss=criterion(pred_data,y_data)
                         loss=torch.mean(loss,dim=0)
+                        if isinstance(pred_data,list):
+                            pred_data=pred_data[0]
                         pred_data=torch.argmax(pred_data,dim=1)
                         result,tp=log_result(result,pred_data,y_data)
                         #log
@@ -189,9 +191,11 @@ def train(config,logger):
                         y_data=y_data.to(device)
                     prepare_time=time.time()-start_time
                     #forward and predict
-                    pred_data=net(x_data).detach()
+                    pred_data=net(x_data)
                     loss=criterion(pred_data,y_data)
                     loss=torch.mean(loss,dim=0)
+                    if isinstance(pred_data,list):
+                        pred_data=pred_data[0]
                     pred_data=torch.argmax(pred_data,dim=1)
                     result,tp=log_result(result,pred_data,y_data)
                     #log
@@ -285,9 +289,11 @@ def test(config,logger):
                 y_data=y_data.to(device)
             prepare_time=time.time()-start_time
             #forward and predict
-            pred_data=net(x_data).detach()
+            pred_data=net(x_data)
             loss=criterion(pred_data,y_data)
             loss=torch.mean(loss,dim=0)
+            if isinstance(pred_data,list):
+                pred_data=pred_data[0]
             pred_data=torch.argmax(pred_data,dim=1)
             result,tp=log_result(result,pred_data,y_data)
             #log

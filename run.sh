@@ -1,2 +1,2 @@
 
-python run.py --config_name baseDCNN
+python run.py --config_name DLPCNN
