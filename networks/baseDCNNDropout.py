@@ -2,7 +2,7 @@ from networks.layers import *
 
 class baseDCNNDropout(nn.Module):
     """
-    return unnormalized tensor [bsz,7]
+    return list[unnormalized tensor [bsz,7], deep feature tensor [bsz,2000]]
     """
     def __init__(self):
         super(baseDCNNDropout,self).__init__()
@@ -22,7 +22,7 @@ class baseDCNNDropout(nn.Module):
         net+=[nn.Dropout(p=self.DROPOUT)]
         self.fc=nn.Sequential(*net)
     def forward(self,x):
-        y=self.convnet(x)
-        y=y.flatten(start_dim=1) #[bsz,256*12*12]
-        y=self.fc(y)
-        return y
+        y1=self.convnet(x)
+        y1=y1.flatten(start_dim=1) #[bsz,256*12*12]
+        y2=self.fc(y1)
+        return [y2,y1]

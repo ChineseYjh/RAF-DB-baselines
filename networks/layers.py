@@ -24,3 +24,28 @@ class ConvLayer(nn.Module):
         self.layer=nn.Sequential(*layer)
     def forward(self,x):
         return self.layer(x)
+    
+class ConvBNBlock(nn.Module):
+    def __init__(self,input_size,output_size,kernel,stride,padding):
+        super(ConvBNBlock,self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+        self.kernel=kernel
+        block=[nn.Conv2d(input_size,output_size,kernel,stride,padding)]
+        block+=[nn.BatchNorm2d(output_size)]
+        block+=[nn.ReLU()]
+        self.block=nn.Sequential(*block)
+    def forward(self,x):
+        return self.block(x)
+    
+class ConvBNLayer(nn.Module):
+    def __init__(self,input_size,output_size,kernel,stride,padding,pool_kernel,pool_stride,pool_padding):
+        super(ConvBNLayer,self).__init__()
+        self.pool_kernel=pool_kernel
+        self.pool_stride=pool_stride
+        self.pool_padding=pool_padding
+        layer=[ConvBNBlock(input_size,output_size,kernel,stride,padding)]
+        layer+=[nn.MaxPool2d(pool_kernel,pool_stride,pool_padding)]
+        self.layer=nn.Sequential(*layer)
+    def forward(self,x):
+        return self.layer(x)

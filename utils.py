@@ -7,18 +7,20 @@ import torchvision
 import json
 import itertools
 import torch
+import torch.optim as optim
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from PIL import Image
 from prefetch_generator import BackgroundGenerator
 from torch.utils.data import Dataset,DataLoader
 
-class RafDB(Dataset):
-    def __init__(self,mode="train"):
-        self.TRAIN_NUM=12271-2454 # ==9817
-        self.VAL_NUM=2454 # 12271//5 == 2454
-        self.TEST_NUM=3068
-        self.NUM2EMO={
+"""
+===========================================CONSTANT=====================================================
+"""
+
+MEAN=[0.575,0.450,0.401]
+STD=[0.152,0.136,0.144]
+NUM2EMO={
             1: "Surprise",
             2: "Fear",
             3: "Disgust",
@@ -27,12 +29,24 @@ class RafDB(Dataset):
             6: "Anger",
             7: "Neutral",
         }
-        self.CLASSNAMES=['sur','fea','dis','hap','sad','ang','neu']
-        self.file_path=f'./npy/file_{mode}.npy'
-        self.label_path=f'./npy/label_{mode}.npy'
+CLASSNAMES=['sur','fea','dis','hap','sad','ang','neu']
+
+"""
+=============================================CLASS======================================================
+"""
+
+class RafDB(Dataset):
+    def __init__(self,mode="train"):
+        self.TRAIN_NUM=12271
+        self.VAL_NUM=3068
+        self.TEST_NUM=3068
+        self.NUM2EMO=NUM2EMO
+        self.CLASSNAMES=CLASSNAMES
+        self.file_path=f'./npyv2/file_{mode}.npy'
+        self.label_path=f'./npyv2/label_{mode}.npy'
         self.mode=mode
         self.preproc=transforms.Compose([transforms.ToTensor(),
-                                         transforms.Normalize(mean=[0.575,0.450,0.402],std=[0.151,0.136,0.144])])
+                                         transforms.Normalize(mean=MEAN,std=STD)])
     def __getitem__(self,index):
         x_data=self.preproc(Image.open(np.load(self.file_path)[index]))
         y_data=torch.tensor([np.load(self.label_path)[index]-1])
@@ -66,6 +80,11 @@ class Pack(dict):
             else:
                 pack[k] = v
         return pack
+    
+    
+"""
+=============================================FUNCTION======================================================
+"""
 
 def prepare_logger(config):
     logger_level = logging.DEBUG if config.debug else logging.INFO
@@ -87,15 +106,44 @@ def prepare_logger(config):
     
     
 def init(config):
+    if config.use_gpu==True and torch.cuda.is_available():
+        pass
+#         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+#         os.environ["CUDA_VISIBLE_DEVICES"] = config.gpu_ids
     torch.backends.cudnn.benchmark = True
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed(config.seed)
+    torch.cuda.manual_seed_all(config.seed)
     if not os.path.exists(config.output_dir):
         os.makedirs(config.output_dir)
     json.dump(config,open(os.path.join(config.output_dir,'config.conf'),'w'))
     return prepare_logger(config)
 
+def config_optimizer(params,config):
+    if config.optim=='Adam':
+        optimizer=torch.optim.Adam(params,lr=config.lr,weight_decay=config.weight_decay)
+    elif config.optim=='SGD':
+        optimizer=torch.optim.SGD(params,lr=config.lr,momentum=config.momentum,weight_decay=config.weight_decay)
+    else:
+        raise
+    return optimizer
+
+def config_scheduler(optimizer,config,mode='iter'):
+    if config[mode+'_scheduler']=="MultiStepLR":
+        scheduler=optim.lr_scheduler.MultiStepLR(optimizer,
+                                                 milestones=[int(st) for st in config[mode+'_milestones'].split(',')],
+                                                 gamma=config[mode+'_gamma'])
+    elif config[mode+'_scheduler']=="ExponentialLR":
+        scheduler=optim.lr_scheduler.ExponentialLR(optimizer,
+                                                   gamma=config[mode+'_gamma'])
+    elif config[mode+'_scheduler']=="StepLR":
+        scheduler=optim.lr_scheduler.StepLR(optimizer,
+                                            step_size=config[mode+'_step_size'],
+                                            gamma=config[mode+'_gamma'])
+    else:
+        raise
+    return scheduler
 
 def save_checkpoint(ckpt_path:str,model,opti,epoch:int,n_iter:int):
     ckpt={'net':model.state_dict(),'optim':opti.state_dict(),'epoch':epoch,'n_iter':n_iter}
@@ -153,3 +201,14 @@ def plot_confusion_matrix(cm, classes,
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
     return fig
+
+def add_embedding(writer,mat,metadata,label_img,global_step,tag):
+    REVERSED_STD=[1/std for std in STD]
+    REVERSED_MEAN=[-mean/std for std,mean in list(zip(MEAN,STD))]
+    reverse_preproc=transforms.Normalize(mean=REVERSED_MEAN,std=REVERSED_STD)
+    new_label_img=torch.cat([reverse_preproc(img).unsqueeze(0) for img in label_img])
+    metadata=[CLASSNAMES[meta.item()] for meta in metadata]
+    writer.add_embedding(mat=mat,metadata=metadata,label_img=new_label_img,global_step=global_step,tag=tag)
+    
+def check_save(tmdv,mmdv):
+    return tmdv>mmdv

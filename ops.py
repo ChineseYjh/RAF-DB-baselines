@@ -35,33 +35,50 @@ def train(config,logger):
     
     #load data
     train_dataset=RafDB(mode="train")
-    val_dataset=RafDB(mode="val")
+    val_dataset=RafDB(mode="test")
     train_loader=RafDBLoader(dataset=train_dataset,batch_size=config.bsz,shuffle=True)
     val_loader=RafDBLoader(dataset=val_dataset,batch_size=config.bsz,shuffle=True)
-    logger.info('create net and loss instance...')
+    logger.info('create net instance...')
     
-    #define net,loss
+    #define net
     net_class=getattr(networks,config.net)
     net=net_class()
-    net_criterion=getattr(losses,config.loss)
-    criterion=net_criterion()
     logger.info('check and set GPU...')
     
     #check gpu
     if config.use_gpu==True and torch.cuda.is_available():
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = config.gpu_ids
+#         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+#         os.environ["CUDA_VISIBLE_DEVICES"] = config.gpu_ids
         device=torch.device('cuda')
         net.to(device)
         if torch.cuda.device_count()>1:
-            device_ids=[int(gpu) for gpu in config.gpu_ids.split(',')]
+            device_ids=[idx for idx in range(torch.cuda.device_count())]
             torch.distributed.init_process_group(backend='nccl', init_method=f'tcp://localhost:{config.localhost}', rank=0, world_size=1)
             net=torch.nn.parallel.DistributedDataParallel(net, device_ids=device_ids, find_unused_parameters=True)
+    logger.info('create loss instance...')
+    
+    #define loss
+    net_criterion=getattr(losses,config.loss)
+    if config.loss_is_weighted:
+        weights=torch.tensor([float(weight) for weight in config.loss_weights.split(',')])
+        if config.use_gpu:
+            weights=weights.to(device)
+        criterion=net_criterion(weight=weights/torch.sum(weights,dim=0))
+    else:
+        criterion=net_criterion()
     logger.info('create optimizer...')
     
     #define optimizer
-    optimizer_class=getattr(torch.optim,config.optim)
-    optimizer=optimizer_class(net.parameters(),lr=config.lr,weight_decay=config.weight_decay)
+    optimizer=config_optimizer(net.parameters(),config)
+    logger.info("check LR scheduler...")
+    
+    #define lr_scheduler
+    schedule_on_iter=config.schedule_on_iter
+    schedule_on_epoch=config.schedule_on_epoch
+    if schedule_on_iter:
+        iter_scheduler=config_scheduler(optimizer,config,mode='iter')
+    if schedule_on_epoch:
+        epoch_scheduler=config_scheduler(optimizer,config,mode='epoch')
     
     #load checkpoint if needed
     start_n_iter=0
@@ -73,8 +90,9 @@ def train(config,logger):
         start_epoch=ckpt['epoch']
         net.load_state_dict(ckpt['net'])
         optimizer.load_state_dict(ckpt['optim'])
-        
+    
     #tensorboardX
+    logger.info("set tensorboardX...")
     writer_dir=os.path.join(config.output_dir,'boardX')
     if not os.path.exists(writer_dir):
         os.makedirs(writer_dir)
@@ -88,6 +106,8 @@ def train(config,logger):
     #start
     logger.info(f'start with epoch range of [{start_epoch}, {config.epoch})...')
     n_iter=start_n_iter
+    mmdv=0
+    m_n_iter=0
     if n_iter==0:
         optimizer.zero_grad()
     for epoch in range(start_epoch,config.epoch):
@@ -112,23 +132,31 @@ def train(config,logger):
                 pred_data=net(x_data)
                 loss=criterion(pred_data,y_data)
                 loss=torch.mean(loss,dim=0)
+                loss/=config.gd_acc
                 loss.backward()
                 if n_iter%config.gd_acc==config.gd_acc-1:
                     optimizer.step()
                     optimizer.zero_grad()
+                if schedule_on_iter:
+                    iter_scheduler.step()
                 #log
-                tot_loss+=loss.item()
-                writer.add_scalars('loss',{'Train':loss.item()},n_iter)
+                tot_loss+=loss.item()*config.gd_acc
+                writer.add_scalars('loss',{'Train':loss.item()*config.gd_acc},n_iter)
                 process_time=time.time()-start_time-prepare_time
                 pbar.set_description("Compute efficiency: {:.2f}, epoch: {}/{}:".format(
                     process_time/(process_time+prepare_time), epoch, config.epoch))
+                if config.add_embedding and isinstance(pred_data,list):
+                    add_embedding(writer,mat=pred_data[1],metadata=y_data,label_img=x_data,global_step=n_iter,tag="train set")
                 n_iter+=1
+                
             logger.info(f"[Epoch: {epoch}]TrainLoss:{tot_loss/len(train_loader)}")
+            if schedule_on_epoch:
+                epoch_scheduler.step()
             
             #val and save
             if epoch%config.save_per_epoch==config.save_per_epoch-1:
                 logger.info(f"suspend to save ckpt and  validate on val set when epoch[{epoch}] is complete...")
-                save_checkpoint(os.path.join(ckpt_dir,f'ckpt-{n_iter}.pickle'),net,optimizer,epoch,n_iter)
+                
                 result=np.zeros((7,7))
                 net.eval()
                 with torch.no_grad():
@@ -165,9 +193,18 @@ def train(config,logger):
                             process_time/(process_time+prepare_time), epoch, config.epoch))
                     writer.add_scalars('loss',{'Val':tot_loss/len(val_loader)},n_iter)
                     normalized_result = result.astype('float') / (0.0001+result.sum(axis=1)[:, np.newaxis])
-                    writer.add_scalar('mean_diagonal_value',sum([normalized_result[i][i] for i in range(7)])/7,n_iter)
+                    tmdv=sum([normalized_result[i][i] for i in range(7)])/7
+                    writer.add_scalar('mean_diagonal_value',tmdv,n_iter)
                     writer.add_figure('confusion_matrix_on_val_set',figure=plot_confusion_matrix(result, classes=val_dataset.CLASSNAMES, normalize=True,title='confusion matrix on val set'),global_step=n_iter)
                     writer.add_scalar('accuracy',TP/TOT,n_iter)
+                    
+                    if check_save(tmdv,mmdv):
+                        mmdv=tmdv
+                        if m_n_iter:
+                            os.remove(os.path.join(ckpt_dir,f'ckpt-{m_n_iter}.pickle'))
+                        m_n_iter=n_iter
+                        save_checkpoint(os.path.join(ckpt_dir,f'ckpt-{n_iter}.pickle'),net,optimizer,epoch,n_iter)
+                    
                     logger.info(f"[Epoch: {epoch}]ValLoss:{tot_loss/len(val_loader)}")
         else:
             logger.info(f"forward only! So validate on train set when epoch[{epoch}] is complete...")
@@ -194,10 +231,13 @@ def train(config,logger):
                     pred_data=net(x_data)
                     loss=criterion(pred_data,y_data)
                     loss=torch.mean(loss,dim=0)
+                    embedding_addable=False
                     if isinstance(pred_data,list):
+                        embedding=pred_data[1]
                         pred_data=pred_data[0]
-                    pred_data=torch.argmax(pred_data,dim=1)
-                    result,tp=log_result(result,pred_data,y_data)
+                        embedding_addable=True
+                    pred_label=torch.argmax(pred_data,dim=1)
+                    result,tp=log_result(result,pred_label,y_data)
                     #log
                     tot_loss+=loss.item()
                     TP+=tp
@@ -206,6 +246,8 @@ def train(config,logger):
                     pbar.set_description("Compute efficiency: {:.2f}, epoch: {}/{}:".format(
                         process_time/(process_time+prepare_time), epoch, config.epoch))
                     writer.add_scalars('loss',{'Train':loss.item()},i)
+                    if config.add_embedding and embedding_addable:
+                        add_embedding(writer,mat=pred_data,metadata=y_data,label_img=x_data,global_step=i,tag="7-dim vectors on train set")
                 writer.add_figure('confusion_matrix_on_train_set',figure=plot_confusion_matrix(result, classes=train_dataset.CLASSNAMES, normalize=True,title='confusion matrix on train set'),global_step=n_iter)
                 normalized_result = result.astype('float') / (0.0001+result.sum(axis=1)[:, np.newaxis])
                 writer.add_scalar('mean_diagonal_value',sum([normalized_result[i][i] for i in range(7)])/7,n_iter)
@@ -232,13 +274,11 @@ def test(config,logger):
     #load data
     test_dataset=RafDB(mode="test")
     test_loader=RafDBLoader(dataset=test_dataset,batch_size=config.bsz,shuffle=True)
-    logger.info('create net and loss instance...')
+    logger.info('create net...')
     
-    #define net,loss
+     #define net
     net_class=getattr(networks,config.net)
     net=net_class()
-    net_criterion=getattr(losses,config.loss)
-    criterion=net_criterion()
     logger.info('check and set GPU...')
     
     #check gpu
@@ -251,6 +291,17 @@ def test(config,logger):
             device_ids=[int(gpu) for gpu in config.gpu_ids.split(',')]
             torch.distributed.init_process_group(backend='nccl', init_method=f'tcp://localhost:{config.localhost}', rank=0, world_size=1)
             net=torch.nn.parallel.DistributedDataParallel(net, device_ids=device_ids, find_unused_parameters=True)
+    logger.info('create loss instance...')
+    
+    #define loss
+    net_criterion=getattr(losses,config.loss)
+    if config.loss_is_weighted:
+        weights=torch.tensor([float(weight) for weight in config.loss_weights.split(',')])
+        if config.use_gpu:
+            weights=weights.to(device)
+        criterion=net_criterion(weight=weights/torch.sum(weights,dim=0))
+    else:
+        criterion=net_criterion()
     
     #load checkpoint if needed
     start_n_iter=0
@@ -261,13 +312,16 @@ def test(config,logger):
         start_n_iter=ckpt['n_iter']
         start_epoch=ckpt['epoch']
         net.load_state_dict(ckpt['net'])
-        logger.info(f'checkpoint is on epoch[{start_epoch}], iter[{start_n_iter}]')
+        logger.info(f"Epoch={start_epoch}, N_iter={start_n_iter}")
     
     #tensorboardX
+    logger.info("set tensorboardX...")
     writer_dir=os.path.join(config.output_dir,'boardX')
-    if os.path.exists(writer_dir):
+    if not os.path.exists(writer_dir):
         os.makedirs(writer_dir)
     writer=SummaryWriter(writer_dir)
+    
+    
     logger.info(f"test on test set...")
     result=np.zeros((7,7))
     net.eval()
@@ -292,8 +346,11 @@ def test(config,logger):
             pred_data=net(x_data)
             loss=criterion(pred_data,y_data)
             loss=torch.mean(loss,dim=0)
+            embedding_addable=False
             if isinstance(pred_data,list):
+                embedding=pred_data[1]
                 pred_data=pred_data[0]
+                embedding_addable=True
             pred_data=torch.argmax(pred_data,dim=1)
             result,tp=log_result(result,pred_data,y_data)
             #log
@@ -304,6 +361,8 @@ def test(config,logger):
             pbar.set_description("Compute efficiency: {:.2f}, iter: {}/{}:".format(
                 process_time/(process_time+prepare_time), i, len(test_loader)))
             writer.add_scalars('loss',{'Test':loss.item()},i)
+            if config.add_embedding and embedding_addable:
+                add_embedding(writer,mat=embedding,metadata=y_data,label_img=x_data,global_step=i,tag="test set")
         
         #write and log
         writer.add_figure('confusion_matrix_on_test_set',figure=plot_confusion_matrix(result, classes=test_dataset.CLASSNAMES, normalize=True,title='confusion matrix on test set'),global_step=start_n_iter)
