@@ -2,7 +2,7 @@ from networks.layers import *
 
 class baseDCNN(nn.Module):
     """
-    return unnormalized tensor [bsz,7]
+    return list[unnormalized tensor [bsz,7], deep feature tensor [bsz,2000]]
     """
     def __init__(self):
         super(baseDCNN,self).__init__()
@@ -15,10 +15,11 @@ class baseDCNN(nn.Module):
         self.convnet=nn.Sequential(*net)
         net=[nn.Linear(256*12*12,2000)]
         net+=[nn.ReLU()]
-        net+=[nn.Linear(2000,7)]
         self.fc=nn.Sequential(*net)
+        self.linear=nn.Linear(2000,7)
     def forward(self,x):
-        y=self.convnet(x)
-        y=y.flatten(start_dim=1) #[bsz,256*12*12]
-        y=self.fc(y)
-        return y
+        y1=self.convnet(x)
+        y1=y1.flatten(start_dim=1) #[bsz,256*12*12]
+        y1=self.fc(y1)
+        y2=self.linear(y1)
+        return [y2,y1]
