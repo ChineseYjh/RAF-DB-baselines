@@ -470,8 +470,8 @@ def svm_fit_and_test(config,logger):
         if config.loss_is_weighted:
             weights=np.array([float(weight) for weight in config.loss_weights.split(',')])
             weights=weights/sum(weights)
-            sample_weight=weights
             class_weight=dict(enumerate(weights))
+            sample_weight=np.array([class_weight[c] for c in svmY])
         msvm=sklearn.svm.LinearSVC(class_weight=class_weight)
         msvm.fit(svmX,svmY,sample_weight=sample_weight)
         
