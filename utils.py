@@ -45,10 +45,16 @@ class RafDB(Dataset):
         self.file_path=f'./npyv2/file_{mode}.npy'
         self.label_path=f'./npyv2/label_{mode}.npy'
         self.mode=mode
-        self.preproc=transforms.Compose([transforms.ToTensor(),
-                                         transforms.Normalize(mean=MEAN,std=STD)])
+        self.preproc0=transforms.Compose([transforms.RandomResizedCrop(100,scale=(0.9,1.0),ratio=(0.9,1.1)),
+                                          transforms.RandomHorizontalFlip(p=0.5),
+                                          transforms.RandomRotation(degrees=25),
+                                          transforms.ToTensor(),
+                                          transforms.Normalize(mean=MEAN,std=STD)])
+        self.preproc1=transforms.Compose([transforms.ToTensor(),
+                                          transforms.Normalize(mean=MEAN,std=STD)])
     def __getitem__(self,index):
-        x_data=self.preproc(Image.open(np.load(self.file_path)[index]))
+        preproc=self.preproc0 if self.mode=="train" else self.preproc1
+        x_data=preproc(Image.open(np.load(self.file_path)[index]))
         y_data=torch.tensor([np.load(self.label_path)[index]-1])
         return x_data,y_data
     def __len__(self):
@@ -110,7 +116,8 @@ def init(config):
         pass
 #         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 #         os.environ["CUDA_VISIBLE_DEVICES"] = config.gpu_ids
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark=False
+    torch.backends.cudnn.deterministic=True
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     torch.cuda.manual_seed(config.seed)

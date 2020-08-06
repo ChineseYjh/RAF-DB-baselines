@@ -17,6 +17,9 @@ if __name__=='__main__':
         elif(config.mode=='val'):
             val(config,logger)
         elif(config.mode=='test'):
-            test(config,logger)
+            if config.classifier=='svm':
+                svm_fit_and_test(config,logger)
+            else:
+                test(config,logger)
     except KeyboardInterrupt:
         logger.error('Stopped by keyboard.\nexit 1.')

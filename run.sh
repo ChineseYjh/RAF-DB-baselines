@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=2,3 python run.py --config_name DLPCNN
+CUDA_VISIBLE_DEVICES=0,1 python run.py --config_name baseDCNN
