@@ -17,7 +17,7 @@ if __name__=='__main__':
         elif(config.mode=='val'):
             val(config,logger)
         elif(config.mode=='test'):
-            if config.classifier=='svm':
+            if 'SVC' in config.classifier:
                 svm_fit_and_test(config,logger)
             else:
                 test(config,logger)

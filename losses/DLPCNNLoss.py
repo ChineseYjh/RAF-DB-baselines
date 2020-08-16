@@ -28,7 +28,7 @@ class DLPCNNLoss(nn.Module):
         x: list of tensors [torch.tensor[bsz,#class],torch.tensor[bsz,2000]]
         y: torch.tensor sized [bsz]
         """
-        x=x[0]
+        preds,x=x
         loss_lp=0
         class2xi_row=dict()
         for row,xi in enumerate(x):
@@ -43,4 +43,4 @@ class DLPCNNLoss(nn.Module):
             loss_lp+=self.topk_dis(xi,row,class2xi_row[nowy],y,self.k)
         loss_lp/=x.size(0)
         del class2xi_row
-        return self.lamda*loss_lp/2+self.loss(x,y)
+        return self.lamda*loss_lp/2+self.loss(preds,y)

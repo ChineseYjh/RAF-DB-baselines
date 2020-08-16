@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torchvision
 
 class ConvBlock(nn.Module):
     def __init__(self,input_size,output_size,kernel,stride,padding):

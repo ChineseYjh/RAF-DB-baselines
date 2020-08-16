@@ -463,7 +463,7 @@ def svm_fit_and_test(config,logger):
             if config.add_embedding and embedding_addable:
                 add_embedding(writer,mat=embedding,metadata=y_data,label_img=x_data,global_step=i,tag="train set")
         
-        logger.info(f"fit svm on train set...")
+        logger.info("create svm...")
         svmX=torch.cat(feats,dim=0).numpy()
         svmY=torch.cat(labels,dim=0).numpy()
         sample_weight=class_weight=None
@@ -472,12 +472,20 @@ def svm_fit_and_test(config,logger):
             weights=weights/sum(weights)
             class_weight=dict(enumerate(weights))
             sample_weight=np.array([class_weight[c] for c in svmY])
-        msvm=sklearn.svm.LinearSVC(class_weight=class_weight)
+        msvm_class=getattr(sklearn.svm,config.classifier)
+        if config.classifier!='LinearSVC':
+            msvm=msvm_class(class_weight=class_weight,decision_function_shape='ovo')
+        else:
+            msvm=msvm_class(class_weight=class_weight)
+            
+        logger.info(f"fit svm on train set...")
         msvm.fit(svmX,svmY,sample_weight=sample_weight)
         
         logger.info("predict on train set...")
         result=np.zeros((7,7))
         TOT=svmY.shape[0]
+        if config.classifier!='LinearSVC':
+            msvm.decision_function_shape="ovr"
         pred_data=msvm.decision_function(svmX)
         pred_data=torch.argmax(torch.from_numpy(pred_data),dim=1)
         result,TP=log_result(result,pred_data,torch.from_numpy(svmY))
